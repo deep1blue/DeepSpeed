@@ -5,6 +5,7 @@
 
 import copy
 import os
+from collections import deque
 from typing import List, Tuple
 
 import torch
@@ -342,19 +343,19 @@ def update_max_memory(name):
     max_memory = max(max_memory, mem)
 
 
-offload_tasks = []
+offload_tasks = deque()
 offload_tasks_scheduled = []
 # Entries of offload_tasks_scheduled that already have launch nodes (graph breaks run the
 # pass once per forward graph, and each must only insert its own share).
 offload_tasks_inserted = 0
-reload_tasks_remaining = []
+reload_tasks_remaining = deque()
 total_reload_mem = 0
 
 
 def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[Tuple[int, bool]],
                            profiling_results: ProfilingResult, mem_budget: float, param_manager: DSGraphParamManager,
                            bwd: bool) -> Graph:
-    global _empty_cache_pending, offload_tasks_inserted, reload_tasks_remaining, total_reload_mem
+    global _empty_cache_pending, offload_tasks, offload_tasks_inserted, reload_tasks_remaining, total_reload_mem
 
     to_remove = []
     for node in graph.nodes:
@@ -424,6 +425,9 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[Tuple[
                 offload_tasks.append((i, (hp_param, hp_param_cpu), "hp_param",
                                       hp_param.numel() * hp_param.element_size(), hp_param.dtype))
 
+        if not isinstance(offload_tasks, deque):
+            offload_tasks = deque(offload_tasks)
+        optim_size = sum(task[3] for task in offload_tasks)
         for node in graph.nodes:
             if node.name not in peak_mem \
                     or node.op == 'placeholder' \
@@ -431,16 +435,15 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[Tuple[
                 continue
 
             to_offload = []
-            optim_size = sum([task[3] for task in offload_tasks])
 
             # Peaks were profiled with the states already emptied, so residency adds on top.
             while total_mem - peak_mem[node.name] - optim_size < 0:
                 if len(offload_tasks) == 0:
                     break
 
-                task = offload_tasks.pop(0)
+                task = offload_tasks.popleft()
                 to_offload.append(task)
-                optim_size = sum([task[3] for task in offload_tasks])
+                optim_size -= task[3]
 
             # No sync node needed: the launch op frees the state, gated by record_stream.
             for task in to_offload:
@@ -482,7 +485,9 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[Tuple[
                     inserted_sync = True
         if is_first_graph:
             # Reset once per backward, not per graph: later graphs continue from the remainder.
-            reload_tasks_remaining = copy.copy(offload_tasks_scheduled)
+            reload_tasks_remaining = deque(offload_tasks_scheduled)
+        elif not isinstance(reload_tasks_remaining, deque):
+            reload_tasks_remaining = deque(reload_tasks_remaining)
 
         for node in graph.nodes:
             if node.name not in peak_mem \
@@ -508,7 +513,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[Tuple[
                                                        name=f"reload_opt_{task[0]}_{task[2]}")
 
                     total_reload_mem += next_reload_mem
-                    reload_tasks_remaining.pop(0)
+                    reload_tasks_remaining.popleft()
                     if len(reload_tasks_remaining) == 0:
                         break
 

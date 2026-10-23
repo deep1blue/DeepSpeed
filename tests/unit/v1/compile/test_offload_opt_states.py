@@ -280,6 +280,61 @@ def test_empty_cache_runs_once_per_phase(monkeypatch):
     assert len(calls) == 1
 
 
+def test_multi_param_incremental_offload_and_reload(monkeypatch):
+    _ensure_dc_ops()
+    num_params = 4
+    state_dict = {}
+    fp32_groups = []
+    pin_buffers = []
+    for _ in range(num_params):
+        p = torch.zeros(4)
+        state_dict[p] = {
+            _make_offload_state_key("exp_avg"): torch.zeros(8),
+            _make_offload_state_key("exp_avg_sq"): torch.zeros(8),
+        }
+        fp32_groups.append(torch.zeros(8))
+        pin_buffers.append(torch.zeros(8))
+    fake_opt = SimpleNamespace(state=state_dict,
+                               fp32_partitioned_groups_flat=fp32_groups,
+                               hp_params_pin_buffers=pin_buffers)
+
+    monkeypatch.setattr(offload_pass.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(offload_pass, "offload_adam_states_sync", lambda: None)
+    monkeypatch.setattr(offload_pass, "reload_adam_states_sync", lambda: None)
+    monkeypatch.setattr(offload_pass, "sync_reload_states", lambda: None)
+    monkeypatch.setattr(offload_pass, "optimizer", fake_opt)
+    # 12 tasks * 32B = 384B total. With peak increasing from 100B to 300B and budget 350B,
+    # tasks are progressively scheduled across nodes as peak memory rises.
+    monkeypatch.setenv("DS_DC_OFFLOAD_OPT_BUDGET_GB", "3.5e-7")
+
+    fwd_graph = torch.fx.Graph()
+    x = fwd_graph.placeholder("x")
+    x.meta["val"] = torch.empty(4)
+    n1 = fwd_graph.call_function(torch.relu, (x, ))
+    n2 = fwd_graph.call_function(torch.relu, (n1, ))
+    n3 = fwd_graph.call_function(torch.relu, (n2, ))
+    fwd_graph.output(n3)
+    fwd_mem = [(x.name, 0, 0, 0), (n1.name, 100, 0, 100), (n2.name, 200, 0, 200), (n3.name, 300, 0, 300)]
+
+    bwd_graph = torch.fx.Graph()
+    t = bwd_graph.placeholder("tangent")
+    t.meta["val"] = torch.empty(4)
+    b1 = bwd_graph.call_function(torch.relu, (t, ))
+    b2 = bwd_graph.call_function(torch.relu, (b1, ))
+    bwd_graph.output(b2)
+    bwd_mem = [(t.name, 0, 0, 0), (b1.name, 50, 0, 50), (b2.name, 200, 0, 200)]
+
+    prof = SimpleNamespace(fwd_mem=fwd_mem, bwd_mem=bwd_mem)
+    offload_pass.offload_opt_states_inc(fwd_graph, 0, [(0, True)], {0: prof}, 0.0, None, bwd=False)
+    # 350 - 300 = 50B headroom -> at most 1 of the 12 (32B) tasks stays resident; 11 offloaded.
+    assert len(offload_pass.offload_tasks_scheduled) == 11
+    assert len(offload_pass.offload_tasks) == 1
+
+    offload_pass.offload_opt_states_inc(bwd_graph, 0, [(0, True)], {0: prof}, 0.0, None, bwd=True)
+    reload_names = [n.name for n in bwd_graph.nodes if n.name.startswith("reload_opt_")]
+    assert len(reload_names) == 11
+
+
 class TestOffloadOptStates(DistributedTest):
     world_size = 2
     non_daemonic_procs = True

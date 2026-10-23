@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 import operator
+from collections import deque
 from typing import Optional, List, Callable
 
 import torch
@@ -107,11 +108,11 @@ def pass_shard_seq_dim(gm: GraphModule, example_inputs):
 
     # find all consumers of the sharded inputs
     consumer_nodes = set()
-    worklist = list(sharded_input_nodes)
+    worklist = deque(sharded_input_nodes)
     visited = set()
 
     while worklist:
-        node = worklist.pop(0)
+        node = worklist.popleft()
         if node in visited:
             continue
         visited.add(node)

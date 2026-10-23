@@ -3,6 +3,7 @@
 
 # DeepSpeed Team
 
+from collections import deque
 from typing import List, Tuple
 
 import torch
@@ -87,7 +88,7 @@ def schedule_prefetch(gm: GraphModule, graph_id: int, graph_order: List[Tuple[in
     order_rev = list(reversed(graph.nodes))
     new_order_rev = []
     prefetch_ags = []
-    prefetch_ag_groups = []
+    prefetch_ag_groups = deque()
     ag_tensor_size_sum = 0
     for i, node in enumerate(order_rev):
         # print_rank_0(
@@ -104,7 +105,7 @@ def schedule_prefetch(gm: GraphModule, graph_id: int, graph_order: List[Tuple[in
             while next_peak + ag_tensor_size_sum > max_mem or ag_tensor_size_sum > MAX_BUFFERED_SIZE:
                 if len(prefetch_ag_groups) > 0:
                     # launch prefetch
-                    fused_ag_nodes = prefetch_ag_groups.pop(0)
+                    fused_ag_nodes = prefetch_ag_groups.popleft()
                     total_ag_tensor_size = sum([tensor_size_dict[ag_node.name] for ag_node in fused_ag_nodes])
                     ag_tensor_size_sum -= total_ag_tensor_size
                     new_order_rev.append(fused_ag_nodes)

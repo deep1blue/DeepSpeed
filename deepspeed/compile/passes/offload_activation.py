@@ -6,7 +6,7 @@
 import functools
 import os
 import time
-from collections import OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -425,6 +425,7 @@ def _eligible_activations(graph: Graph, graph_id: int, num_fwd_outputs, param_ma
     _skipped.clear()
 
     saved_nodes = [node for node in outputs[num_fwd_outputs:] if isinstance(node, Node)]
+    saved_node_counts = Counter(saved_nodes)
     alias_roots: Dict[Node, Node] = {}
     storage_keepers = _storage_keeper_counts(graph, saved_nodes, returned_to_caller, no_copy_ops, alias_roots)
 
@@ -436,7 +437,7 @@ def _eligible_activations(graph: Graph, graph_id: int, num_fwd_outputs, param_ma
         seen.add(node)
         # A value saved twice reaches the backward graph as two placeholders under two names, and
         # only the one named after this node would be reloaded. Leave it alone.
-        if saved_nodes.count(node) > 1:
+        if saved_node_counts[node] > 1:
             _skipped["duplicate"] += _skip_bytes(node)
             continue
         # A parameter is already managed by ZeRO, and a value the caller also receives has to stay
