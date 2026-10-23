@@ -99,7 +99,9 @@ def test_checkpoint_descriptor_legacy_and_invalid_metadata(tmpdir, dimensions, e
     else:
         descriptor = get_model_3d_descriptor(str(tmpdir))
         assert (descriptor.pp_degree, descriptor.tp_degree, descriptor.dp_degree) == (1, 2, 2)
-        assert ZeROCheckpoint(str(tmpdir)).get_src_tp_degree() == 2
+        zero_ckpt = ZeROCheckpoint(str(tmpdir))
+        assert zero_ckpt.get_src_tp_degree() == 2
+        zero_ckpt.print_3d_file_map(tag="legacy")
 
 
 def test_checkpoint_writer_discovery_and_consumers_load_model_files_once(tmpdir, monkeypatch):

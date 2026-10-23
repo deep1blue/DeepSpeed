@@ -82,8 +82,8 @@ class ZeROCheckpoint(object):
         if tag:
             print(f'3D file map: {tag}')
         for dp_index, _2d_map in enumerate(self._3d_file_map):
-            for pp_index in _2d_map.pp_degree:
-                for tp_index in _2d_map.tp_degree:
+            for pp_index in range(_2d_map.pp_degree):
+                for tp_index in range(_2d_map.tp_degree):
                     file_index_list = _2d_map.get_data(pp_index, tp_index)
                     file_list = [self.file_list[idx] for idx in file_index_list]
                     print(f'{pp_index}, {tp_index}, {dp_index} => {file_list}')
