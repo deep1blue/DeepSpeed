@@ -204,3 +204,46 @@ def test_data_analyzer_runs_only_the_specific_threads(tmp_path):
         fname = tmp_path / "value" / f"worker0_thread{thread}" / "value_sample_to_metric"
         stored = MMapIndexedDataset(str(fname), skip_warmup=True)
         assert [int(v[0]) for v in stored] == list(expected)
+
+
+class _DictDataset(torch.utils.data.Dataset):
+
+    def __init__(self, values):
+        self.values = values
+
+    def __len__(self):
+        return len(self.values)
+
+    def __getitem__(self, idx):
+        return {"value": self.values[idx], "aux": self.values[idx]}
+
+
+def _dict_value_metric(batch):
+    return batch["value"]
+
+
+def test_data_analyzer_dict_batches_and_threshold_flushes(tmp_path):
+    # Dict batches without an explicit 'index' field have len(data) == num_keys rather than
+    # batch_size, and only metric values touched in the current batch can cross the 100-sample
+    # CSV flush threshold.
+    values = torch.tensor([7] * 105 + list(range(100, 115)), dtype=torch.int64)
+    analyzer = DataAnalyzer(_DictDataset(values),
+                            num_threads=1,
+                            batch_size=8,
+                            metric_names=["value"],
+                            metric_functions=[_dict_value_metric],
+                            metric_types=["single_value_per_sample"],
+                            metric_dtypes=[torch.int64],
+                            save_path=str(tmp_path))
+    analyzer.run_map()
+    analyzer.run_reduce()
+
+    sample_to_metric = MMapIndexedDataset(str(tmp_path / "value" / "value_sample_to_metric"), skip_warmup=True)
+    assert [int(v[0]) for v in sample_to_metric] == values.tolist()
+
+    index_to_sample = MMapIndexedDataset(str(tmp_path / "value" / "value_index_to_sample"), skip_warmup=True)
+    index_to_metric = MMapIndexedDataset(str(tmp_path / "value" / "value_index_to_metric"), skip_warmup=True)
+    bucket_by_metric = {int(index_to_metric[i][0]): index_to_sample[i].tolist() for i in range(len(index_to_metric))}
+    assert bucket_by_metric[7] == list(range(105))
+    for offset, m_val in enumerate(range(100, 115), start=105):
+        assert bucket_by_metric[m_val] == [offset]

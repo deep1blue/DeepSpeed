@@ -108,15 +108,18 @@ class DataAnalyzer(object):
                 metric_values = torch.from_numpy(metric_values)
 
             if metric_type == 'single_value_per_sample':
+                touched_values = {}
                 for row in range(metric_values.size()[0]):
                     sample_idx = batch_start_idx + row  # sample idx following dataset iteration order
                     if isinstance(data, dict) and 'index' in data:  # Megatron use case, idx provided in 'index' field
                         sample_idx = data['index'][row][0].item()
                     elif self.sample_indices is not None:  # user defined shuffling of indices
                         sample_idx = self.sample_indices[sample_idx]
+                    m_value = metric_values[row].item()
                     metric_result["sample_to_metric_builder"].add_item(metric_values[row].reshape(-1))
-                    metric_result["metric_to_sample_dict"][metric_values[row].item()].append(sample_idx)
-                for m_value in metric_result["metric_to_sample_dict"]:
+                    metric_result["metric_to_sample_dict"][m_value].append(sample_idx)
+                    touched_values[m_value] = None
+                for m_value in touched_values:
                     if len(metric_result["metric_to_sample_dict"][m_value]) > 100:
                         metric_fname = metric_result["metric_to_sample_fname"]
                         with open(f"{metric_fname}_{m_value}.csv", 'a') as f:
@@ -182,7 +185,8 @@ class DataAnalyzer(object):
                 else:
                     self.custom_map_update(data, self.metric_types, self.metric_dtypes, self.metric_functions,
                                            metric_results, batch_start_idx)
-                processed_sample += len(data)
+                batch_size = len(next(iter(data.values()))) if isinstance(data, dict) and len(data) > 0 else len(data)
+                processed_sample += batch_size
                 duration = (time.time() - start) / 3600.0
                 remain_duration = duration * total_sample / processed_sample - duration
                 logger.info(
@@ -544,7 +548,8 @@ class DistributedDataAnalyzer(object):
                         metric_results[m_idx] = metric_values
                     else:
                         metric_results[m_idx].add_(metric_values)
-            batch_start_idx += len(data)
+            batch_start_idx += len(next(iter(
+                data.values()))) if isinstance(data, dict) and len(data) > 0 else len(data)
 
         if self.num_threads == 1:
             return metric_results
