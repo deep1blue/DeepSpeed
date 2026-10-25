@@ -15,11 +15,12 @@ def _make_offload_state_key(key):
 
 
 def offload_optimizer_states(optimizer, device, pin_memory=False, non_blocking=False):
+    accelerator = get_accelerator() if pin_memory else None
     for state in optimizer.state.values():
         for k, v in state.items():
             if torch.is_tensor(v):
                 if pin_memory and v.device.type != 'cpu':
-                    pinned_buffer = get_accelerator().pin_empty_like(v, device='cpu')
+                    pinned_buffer = accelerator.pin_empty_like(v, device='cpu')
                     pinned_buffer.copy_(v, non_blocking=non_blocking)
                     state[k] = pinned_buffer
                 else:
@@ -58,13 +59,14 @@ def unpin_offloaded_optimizer_states(optimizer):
 
 def offload_adam_states(optimizer, device, pin_memory: bool = False, non_blocking: bool = False):
     """Move optimizer states to device. Note that this assumes the state structure of DeepSpeed Adam."""
+    accelerator = get_accelerator() if pin_memory else None
 
     def move_key(state, key):
         offload_buf_key = _make_offload_state_key(key)
         if offload_buf_key not in state:
             state[offload_buf_key] = torch.empty_like(state[key], device=device)
             if pin_memory:
-                state[offload_buf_key] = get_accelerator().pin_memory(state[offload_buf_key])
+                state[offload_buf_key] = accelerator.pin_memory(state[offload_buf_key])
         state[offload_buf_key].copy_(state[key], non_blocking=non_blocking)
         state[key].data = state[offload_buf_key]
 
@@ -106,8 +108,12 @@ def get_state_devices(model, state: OffloadStateTypeEnum) -> Set[torch.device]:
     elif state == OffloadStateTypeEnum.lp_grads:
         return {model.optimizer.grad_partitions_flat_buffer.device}
     elif state == OffloadStateTypeEnum.optim_states:
-        return set(model.optimizer.get_hp_param_device(p, "exp_avg") for p in model.parameters()) | \
-               set(model.optimizer.get_hp_param_device(p, "exp_avg_sq") for p in model.parameters())
+        get_hp_param_device = model.optimizer.get_hp_param_device
+        return {
+            dev
+            for p in model.parameters()
+            for dev in (get_hp_param_device(p, "exp_avg"), get_hp_param_device(p, "exp_avg_sq"))
+        }
     elif state == OffloadStateTypeEnum.contiguous_grad_buffer:
         return set(bucket.buffer.device for bucket in model.optimizer.ipg_buckets.values()
                    if bucket.buffer is not None)
