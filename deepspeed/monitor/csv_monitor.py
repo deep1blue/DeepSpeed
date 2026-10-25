@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 from .monitor import Monitor
+import csv
 import os
 
 import deepspeed.comm as dist
@@ -13,7 +14,8 @@ class csvMonitor(Monitor):
 
     def __init__(self, csv_config):
         super().__init__(csv_config)
-        self.filenames = []
+        self.filenames = set()
+        self._log_name_metadata = {}
         self.enabled = csv_config.enabled
         self.output_path = csv_config.output_path
         self.job_name = csv_config.job_name
@@ -38,30 +40,35 @@ class csvMonitor(Monitor):
             return log_dir
 
     def write_events(self, event_list):
-        if self.enabled and dist.get_rank() == 0:
-            import csv
+        if self.enabled and dist.get_rank() == 0 and event_list:
+            grouped_rows = {}
             # We assume each event_list element is a tensorboard-style tuple in the format: (log_name: String, value, step: Int)
             for event in event_list:
                 log_name = event[0]
                 value = event[1]
                 step = event[2]
 
-                # Set the header to the log_name
-                # Need this check because the deepspeed engine currently formats log strings to separate with '/'
-                if '/' in log_name:
-                    record_splits = log_name.split('/')
-                    header = record_splits[len(record_splits) - 1]
-                else:
-                    header = log_name
+                metadata = self._log_name_metadata.get(log_name)
+                if metadata is None:
+                    # Set the header to the log_name
+                    # Need this check because the deepspeed engine currently formats log strings to separate with '/'
+                    header = log_name.rsplit('/', 1)[-1] if '/' in log_name else log_name
 
-                # sanitize common naming conventions into filename
-                filename = log_name.replace('/', '_').replace(' ', '_')
-                fname = self.log_dir + '/' + filename + '.csv'
+                    # sanitize common naming conventions into filename
+                    filename = log_name.replace('/', '_').replace(' ', '_')
+                    fname = os.path.join(self.log_dir, f'{filename}.csv')
+                    metadata = (filename, fname, header)
+                    self._log_name_metadata[log_name] = metadata
 
-                # Open file and record event. Insert header if this is the first time writing
-                with open(fname, 'a+') as csv_monitor_file:
+                grouped_rows.setdefault(metadata, []).append([step, value])
+
+            for (filename, fname, header), rows in grouped_rows.items():
+                # Open file and record events. Insert header if this is the first time writing to an empty file
+                with open(fname, 'a+', newline='') as csv_monitor_file:
                     csv_monitor_writer = csv.writer(csv_monitor_file)
                     if filename not in self.filenames:
-                        self.filenames.append(filename)
-                        csv_monitor_writer.writerow(['step', header])
-                    csv_monitor_writer.writerow([step, value])
+                        self.filenames.add(filename)
+                        csv_monitor_file.seek(0, os.SEEK_END)
+                        if csv_monitor_file.tell() == 0:
+                            csv_monitor_writer.writerow(['step', header])
+                    csv_monitor_writer.writerows(rows)

@@ -103,6 +103,45 @@ class TestCSVMonitor(DistributedTest):
         assert csv_monitor.job_name == defaults.job_name
 
 
+def test_csv_monitor_write_events_and_resume_no_duplicate_header(tmpdir):
+    import csv
+    import os
+
+    output_path = str(tmpdir)
+    config_dict = {
+        "train_batch_size": 2,
+        "csv_monitor": {
+            "enabled": True,
+            "output_path": output_path,
+            "job_name": "resume_test"
+        }
+    }
+    ds_config = DeepSpeedConfig(config_dict)
+    with patch.object(dist, "get_rank", return_value=0):
+        monitor1 = csvMonitor(ds_config.monitor_config.csv_monitor)
+        monitor1.write_events([
+            ("Train/Samples/lr", 0.001, 1),
+            ("Train/Samples/lr", 0.0005, 2),
+            ("Train/Samples/loss", 2.5, 1),
+        ])
+
+        # Simulate job restart/resume writing to the same log_dir
+        monitor2 = csvMonitor(ds_config.monitor_config.csv_monitor)
+        monitor2.write_events([
+            ("Train/Samples/lr", 0.0001, 3),
+        ])
+
+    lr_csv = os.path.join(output_path, "resume_test", "Train_Samples_lr.csv")
+    with open(lr_csv, "r", newline="") as f:
+        rows = list(csv.reader(f))
+    assert rows == [
+        ["step", "lr"],
+        ["1", "0.001"],
+        ["2", "0.0005"],
+        ["3", "0.0001"],
+    ]
+
+
 class TestCometMonitor(DistributedTest):
     world_size = 2
 
