@@ -132,7 +132,8 @@ def split_params_into_different_moe_groups_for_optimizer(
                         cur_group.append(param)
                         size_of_cur_group += param_numel
                     else:
-                        all_groups.append(cur_group)
+                        if cur_group:
+                            all_groups.append(cur_group)
                         cur_group = [param]
                         size_of_cur_group = param_numel
 
@@ -144,7 +145,8 @@ def split_params_into_different_moe_groups_for_optimizer(
     else:
         for moe_group in group_moe.values():
             for param_group in moe_group.values():
-                param_groups.append(param_group)
+                if param_group['params']:
+                    param_groups.append(param_group)
 
     return param_groups
 

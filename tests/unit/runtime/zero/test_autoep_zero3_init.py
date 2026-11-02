@@ -200,3 +200,40 @@ def test_autoep_zero3_partitioned_experts_keep_optimizer_grouping():
 
     assert group_lengths(make_experts(partitioned=False)) == [2, 2]
     assert group_lengths(make_experts(partitioned=True)) == [2, 2]
+
+    # When an individual expert parameter exceeds max_group_size, the splitter
+    # must place it in its own group without emitting a leading empty group.
+    oversized_groups = split_params_into_different_moe_groups_for_optimizer(
+        {
+            "name": "dense-params",
+            "params": make_experts(partitioned=False),
+        },
+        max_group_size=3,
+    )
+    assert [len(group["params"]) for group in oversized_groups if group.get("moe")] == [1, 1, 1, 1]
+
+    oversized_partitioned_groups = split_params_into_different_moe_groups_for_optimizer(
+        {
+            "name": "dense-params",
+            "params": make_experts(partitioned=True),
+        },
+        max_group_size=3,
+    )
+    assert [len(group["params"]) for group in oversized_partitioned_groups if group.get("moe")] == [1, 1, 1, 1]
+
+    # When max_group_size is None across multiple input groups, unused
+    # (param_group, expert_group_name) combinations must not emit empty MoE groups.
+    unbounded_groups = split_params_into_different_moe_groups_for_optimizer(
+        [
+            {
+                "name": "decay",
+                "params": make_experts(partitioned=False)
+            },
+            {
+                "name": "no-decay",
+                "params": [nn.Parameter(torch.ones(4))]
+            },
+        ],
+        max_group_size=None,
+    )
+    assert [len(group["params"]) for group in unbounded_groups if group.get("moe")] == [4]
