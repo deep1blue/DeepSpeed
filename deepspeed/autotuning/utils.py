@@ -214,7 +214,7 @@ def validate_ds_config(config: dict):
 
 
 def remove_dupe_dicts(l):
-    """ Removes duplicate dictionaries from a list. Uses list comprehension and the json library to sort and stringify each dictionary and the set data type to ensure unique values. Works with nested data structures.
+    """ Removes duplicate dictionaries from a list. Uses list comprehension and the json library to sort and stringify each dictionary and dict.fromkeys to ensure unique values in deterministic first-seen order. Works with nested data structures.
 
     Args:
         l (list): a list of (nested) data structures.
@@ -223,16 +223,16 @@ def remove_dupe_dicts(l):
         A list of unique values.
     """
     list_of_strings = [json.dumps(d, sort_keys=True) for d in l]
-    list_of_strings = set(list_of_strings)
+    list_of_strings = dict.fromkeys(list_of_strings)
     return [json.loads(s) for s in list_of_strings]
 
 
-def prune_config(config, ignored_keys=[]):
+def prune_config(config, ignored_keys=None):
     """ Prunes the input configurations
 
     Args:
         config (dict): A configuration dictionary.
-        ignored_keys (list, optional): the keys of the sections to delete. Defaults to [].
+        ignored_keys (list, optional): the keys of the sections to delete. Defaults to None.
 
     Returns:
         A configuration dictionary.
@@ -243,28 +243,27 @@ def prune_config(config, ignored_keys=[]):
             def find_del_key(d: dict, k: str):
                 if k in d:
                     del d[k]
-                else:
-                    for dd in d.values():
-                        if isinstance(dd, dict):
-                            find_del_key(dd, k)
+                for dd in d.values():
+                    if isinstance(dd, dict):
+                        find_del_key(dd, k)
 
             find_del_key(config, k)
+    return config
 
 
-def prune_configs(configs, ignored_keys=[]):
+def prune_configs(configs, ignored_keys=None):
     """ Prunes the input list of configurations
 
     Args:
         configs (list): A list of configuration dictionaries.
-        ignored_keys (list, optional): the keys of the sections to delete. Defaults to [].
+        ignored_keys (list, optional): the keys of the sections to delete. Defaults to None.
 
     Returns:
         A list of valid and unique configuration dictionaries.
     """
     pruned_list = []
     for config in configs:
-        prune_config(config, ignored_keys)
-        pruned_list.append(config)
+        pruned_list.append(prune_config(copy.deepcopy(config), ignored_keys))
 
     return remove_dupe_dicts(pruned_list)
 

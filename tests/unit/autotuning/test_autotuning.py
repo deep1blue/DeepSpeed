@@ -9,7 +9,13 @@ from unit.simple_model import create_config_from_dict
 from deepspeed.launcher import runner as dsrun
 from deepspeed.autotuning.autotuner import Autotuner
 from deepspeed.autotuning.scheduler import ResourceManager
-from deepspeed.autotuning.utils import get_val_by_key, set_val_by_key
+from deepspeed.autotuning.utils import (
+    get_val_by_key,
+    prune_config,
+    prune_configs,
+    remove_dupe_dicts,
+    set_val_by_key,
+)
 
 RUN_OPTION = 'run'
 TUNE_OPTION = 'tune'
@@ -119,3 +125,106 @@ def test_get_val_by_key_searches_all_nested_subdicts():
     # The getter agrees with the setter, which already reaches this field.
     set_val_by_key(exp, "device", "nvme")
     assert get_val_by_key(exp, "device") == "nvme"
+
+
+def test_remove_dupe_dicts_preserves_first_seen_order():
+    items = [
+        {
+            "stage": 3,
+            "mbs": 8
+        },
+        {
+            "stage": 1,
+            "mbs": 4
+        },
+        {
+            "mbs": 8,
+            "stage": 3
+        },
+        {
+            "stage": 2,
+            "mbs": 2
+        },
+        {
+            "stage": 1,
+            "mbs": 4
+        },
+    ]
+    assert remove_dupe_dicts(items) == [
+        {
+            "stage": 3,
+            "mbs": 8
+        },
+        {
+            "stage": 1,
+            "mbs": 4
+        },
+        {
+            "stage": 2,
+            "mbs": 2
+        },
+    ]
+
+
+def test_prune_config_and_prune_configs_behavior():
+    cfg = {
+        "train_micro_batch_size_per_gpu": 4,
+        "ignored": "top",
+        "zero_optimization": {
+            "stage": 2,
+            "ignored": "nested",
+        },
+    }
+    returned = prune_config(cfg, ignored_keys=["ignored"])
+    assert returned is cfg
+    assert returned == {
+        "train_micro_batch_size_per_gpu": 4,
+        "zero_optimization": {
+            "stage": 2
+        },
+    }
+
+    configs = [
+        {
+            "mbs": 4,
+            "drop": 1,
+            "nested": {
+                "drop": 2,
+                "keep": "a"
+            }
+        },
+        {
+            "mbs": 4,
+            "drop": 99,
+            "nested": {
+                "drop": 100,
+                "keep": "a"
+            }
+        },
+        {
+            "mbs": 2,
+            "drop": 3,
+            "nested": {
+                "drop": 4,
+                "keep": "b"
+            }
+        },
+    ]
+    pruned = prune_configs(configs, ignored_keys=["drop"])
+    assert pruned == [
+        {
+            "mbs": 4,
+            "nested": {
+                "keep": "a"
+            }
+        },
+        {
+            "mbs": 2,
+            "nested": {
+                "keep": "b"
+            }
+        },
+    ]
+    # Caller's input dicts must remain untouched.
+    assert "drop" in configs[0]
+    assert "drop" in configs[0]["nested"]
