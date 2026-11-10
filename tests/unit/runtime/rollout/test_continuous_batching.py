@@ -78,3 +78,32 @@ def test_scheduler_rejects_invalid_transitions():
         scheduler.submit(_request("a"))
     with pytest.raises(ValueError, match="not active"):
         scheduler.schedule(finished_ids=("missing", ))
+    scheduler.schedule()
+    with pytest.raises(ValueError, match="not active"):
+        scheduler.advance(finished_ids=("missing", ))
+
+
+def test_scheduler_steady_state_advance_and_retired_id_reuse():
+    scheduler = ContinuousBatchScheduler(max_batch_size=2, max_new_tokens=3)
+    scheduler.submit(_request("a"))
+    scheduler.submit(_request("b"))
+    scheduler.schedule()
+
+    # Steady-state step with no finished requests and no pending requests
+    update = scheduler.advance(finished_ids=iter(()))
+    assert update.active_ids == ("a", "b")
+    assert update.keep_slots == (0, 1)
+    assert update.retired == ()
+    assert update.admitted == ()
+
+    # Retire 'a' via generator finished_ids and re-submit 'a'
+    update = scheduler.advance(finished_ids=(req_id for req_id in ("a", )))
+    assert update.active_ids == ("b", )
+    assert update.keep_slots == (1, )
+    assert update.retired == ("a", )
+
+    scheduler.submit(_request("a"))
+    update = scheduler.advance()
+    assert update.retired == ("b", )
+    assert update.admitted == (_request("a"), )
+    assert update.active_ids == ("a", )

@@ -86,18 +86,32 @@ class ContinuousBatchScheduler:
         self._pending.append(request)
 
     def schedule(self, finished_ids=()) -> ContinuousBatchUpdate:
-        finished_ids = tuple(finished_ids)
-        active_by_id = {request.request_id: slot for slot, (request, _) in enumerate(self._active)}
-        unknown = set(finished_ids) - active_by_id.keys()
-        if unknown:
+        finished = set(finished_ids) if not isinstance(finished_ids, set) else finished_ids
+        if finished and not finished.issubset(self._generated):
+            unknown = finished - self._generated.keys()
             raise ValueError(f"finished request is not active: {next(iter(unknown))!r}")
+        return self._schedule_verified(finished)
 
-        finished = set(finished_ids)
-        survivors = [(request, self._generated[request.request_id]) for request, _ in self._active
-                     if request.request_id not in finished]
-        keep_slots = tuple(slot for slot, (request, _) in enumerate(self._active)
-                           if request.request_id not in finished)
-        retired = tuple(request.request_id for request, _ in self._active if request.request_id in finished)
+    def _schedule_verified(self, finished: set[Hashable]) -> ContinuousBatchUpdate:
+        if finished:
+            survivors = []
+            keep_slots = []
+            retired = []
+            for slot, (request, generated) in enumerate(self._active):
+                request_id = request.request_id
+                if request_id in finished:
+                    retired.append(request_id)
+                    self._generated.pop(request_id, None)
+                    self._known_ids.discard(request_id)
+                else:
+                    survivors.append((request, generated))
+                    keep_slots.append(slot)
+            keep_slots_tuple = tuple(keep_slots)
+            retired_tuple = tuple(retired)
+        else:
+            survivors = list(self._active)
+            keep_slots_tuple = tuple(range(len(survivors)))
+            retired_tuple = ()
 
         free_slots = self.max_batch_size - len(survivors)
         admitted = []
@@ -110,24 +124,25 @@ class ContinuousBatchScheduler:
             self._generated[request.request_id] = 0
 
         self._active = survivors
-        for request_id in retired:
-            self._generated.pop(request_id, None)
-            self._known_ids.discard(request_id)
-        return ContinuousBatchUpdate(tuple(request for request, _ in survivors), keep_slots, retired, tuple(admitted))
+        return ContinuousBatchUpdate(
+            tuple(request for request, _ in survivors),
+            keep_slots_tuple,
+            retired_tuple,
+            tuple(admitted),
+        )
 
     def advance(self, finished_ids=()) -> ContinuousBatchUpdate:
-        explicit_finished = set(finished_ids)
-        active_ids = {request.request_id for request, _ in self._active}
-        unknown = explicit_finished - active_ids
-        if unknown:
+        finished = set(finished_ids)
+        if finished and not finished.issubset(self._generated):
+            unknown = finished - self._generated.keys()
             raise ValueError(f"finished request is not active: {next(iter(unknown))!r}")
-        finished = set(explicit_finished)
         updated = []
         for request, generated in self._active:
             generated += 1
-            self._generated[request.request_id] = generated
+            request_id = request.request_id
+            self._generated[request_id] = generated
             if generated >= self.max_new_tokens:
-                finished.add(request.request_id)
+                finished.add(request_id)
             updated.append((request, generated))
         self._active = updated
-        return self.schedule(finished)
+        return self._schedule_verified(finished)
