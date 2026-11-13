@@ -90,7 +90,7 @@ class SwapBuffer(object):
         return self.compute_tensors.get(offset, None)
 
     def get_swap_path(self, offset):
-        return self.swap_paths(offset, None)
+        return self.swap_paths.get(offset, None)
 
 
 class SwapBufferPool(object):
@@ -141,14 +141,17 @@ class SwapBufferPool(object):
         return compute_tensors
 
     def has_space(self, numel):
+        if not self.buffers:
+            return False
         if self._get_current_buffer().has_space(numel):
             return True
 
-        if self.current_index == len(self.buffers) - 1:
-            return False
+        for idx in range(self.current_index + 1, len(self.buffers)):
+            if self.buffers[idx].has_space(numel):
+                self.current_index = idx
+                return True
 
-        self.current_index += 1
-        return self._get_current_buffer().has_space(numel)
+        return False
 
     def swap_out(self, aio_handle, async_op=False):
         swap_tensors = self.get_swap_tensors()
@@ -174,6 +177,8 @@ class SwapBufferPool(object):
         return self.buffers[self.current_index]
 
     def _get_used_buffers(self):
+        if not self.buffers:
+            return []
         return self.buffers[:self.current_index + 1]
 
 
@@ -192,7 +197,7 @@ class SwapBufferManager(object):
         self.all_buffers = [aio_handle.new_cpu_locked_tensor(num_elems, dtype_example).zero_() for _ in range(count)]
         self.free_buffer_index = [i for i in range(count)]
         self.used_buffer_index = {}
-        self.gigabytes = (self.all_buffers[0].element_size() * num_elems * count) / (1024**3)
+        self.gigabytes = (dtype_example.element_size() * num_elems * count) / (1024**3)
 
         if dist.get_rank() == 0:
             exclude_list = ['all_buffers', 'aio_handle']
@@ -201,6 +206,8 @@ class SwapBufferManager(object):
     def allocate(self, num_elems, count, dtype):
         assert dtype == self.dtype
         assert num_elems <= self.num_elems
+        if count <= 0:
+            return []
         if count > len(self.free_buffer_index):
             return None
 
