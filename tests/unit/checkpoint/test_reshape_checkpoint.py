@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from deepspeed.checkpoint import DeepSpeedCheckpoint, ZeROCheckpoint, get_model_3d_descriptor, model_3d_desc
+from deepspeed.checkpoint import (DeepSpeedCheckpoint, ZeROCheckpoint, get_model_3d_descriptor, merge_state,
+                                  model_3d_desc)
 from deepspeed.checkpoint.constants import (AUTOEP_LAYERS_KEY, CHECKPOINT_PARALLEL_DIMS, CHECKPOINT_PP_DEGREE,
                                             CHECKPOINT_TP_DEGREE, PARAM_SHAPES, UNIVERSAL_CHECKPOINT_INFO)
 from deepspeed.checkpoint.ds_to_universal import _aggregate_autoep_zero12_metadata
@@ -122,3 +123,46 @@ def test_checkpoint_writer_discovery_and_consumers_load_model_files_once(tmpdir,
     assert checkpoint.get_checkpoint_info(UNIVERSAL_CHECKPOINT_INFO) == {"source": "writer"}
     assert (checkpoint.pp_degree, checkpoint.tp_degree, checkpoint.dp_degree) == (2, 1, 2)
     assert model_loads == checkpoint.mp_rank_files
+
+
+def test_reshape_2d_parallel_state_preserves_disjoint_stage_keys(tmpdir):
+    stage0 = {
+        PARAM_SHAPES: [{
+            "embed.weight": torch.Size([4, 4])
+        }],
+        CHECKPOINT_PARALLEL_DIMS: PP2_TP1,
+        "module": {
+            "embed.weight": torch.arange(8, dtype=torch.float32).reshape(2, 4),
+            "shared.bias": torch.tensor([1.0, 2.0]),
+        },
+    }
+    stage1 = {
+        PARAM_SHAPES: [{
+            "head.weight": torch.Size([4, 4])
+        }],
+        CHECKPOINT_PARALLEL_DIMS: PP2_TP1,
+        "module": {
+            "head.weight": torch.arange(8, 16, dtype=torch.float32).reshape(2, 4),
+            "shared.bias": torch.tensor([3.0, 4.0]),
+        },
+    }
+    torch.save(stage0, os.path.join(str(tmpdir), "mp_rank_00_model_states.pt"))
+    torch.save(stage1, os.path.join(str(tmpdir), "mp_rank_01_model_states.pt"))
+    for dp_rank in range(2):
+        for mp_rank in range(2):
+            torch.save({},
+                       os.path.join(str(tmpdir), f"bf16_zero_pp_rank_{dp_rank}_mp_rank_{mp_rank:02d}_optim_states.pt"))
+
+    checkpoint = DeepSpeedCheckpoint(str(tmpdir), tp_degree=1, pp_degree=1, dp_degree=2)
+    merged = checkpoint.get_2d_parallel_state(tp_index=0, pp_index=0)
+
+    assert torch.equal(merged["module"]["embed.weight"], stage0["module"]["embed.weight"])
+    assert torch.equal(merged["module"]["head.weight"], stage1["module"]["head.weight"])
+    assert torch.equal(merged["module"]["shared.bias"], torch.tensor([1.0, 2.0, 3.0, 4.0]))
+
+
+def test_merge_state_reports_full_nested_key_path_on_type_mismatch(capsys):
+    with pytest.raises(ValueError, match="Cannot merge two states"):
+        merge_state({"outer": {"inner": 1}}, {"outer": {"inner": "mismatch"}})
+    captured = capsys.readouterr()
+    assert "key_list = outer.inner" in captured.out

@@ -78,11 +78,11 @@ def _key_list_to_string(key_list):
 
 
 def merge_state_dict(dict_a, dict_b, key_list):
-    merged_dict = type(dict_a)({})
+    merged_dict = type(dict_a)(dict_a)
 
     for key, value in dict_b.items():
         if key in dict_a.keys():
-            merged_dict[key] = merge_state(dict_a[key], dict_b[key], [str(key)])
+            merged_dict[key] = merge_state(dict_a[key], dict_b[key], key_list + [str(key)])
         else:
             merged_dict[key] = value
 
