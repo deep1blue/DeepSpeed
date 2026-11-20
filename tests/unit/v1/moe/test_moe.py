@@ -540,6 +540,23 @@ def test_traced_gating_capacity_follows_token_count(gate_fn, gate_kwargs):
         assert torch.equal(traced(logits), dispatch_mask(logits))
 
 
+def test_top2gating_preserves_logits_and_autograd():
+    torch.manual_seed(0)
+    raw_logits = torch.randn(8, 4)
+    logits_copy = raw_logits.clone()
+
+    top2gating(raw_logits, 1.0, 0, top2_2nd_expert_sampling=True)
+    torch.testing.assert_close(raw_logits, logits_copy)
+
+    leaf_logits = torch.randn(8, 4, requires_grad=True)
+    l_aux, combine_weights, _, _ = top2gating(leaf_logits, 1.0, 0, top2_2nd_expert_sampling=True)
+    z_loss = torch.logsumexp(leaf_logits, dim=-1).square().mean()
+    total_loss = l_aux + combine_weights.sum() + z_loss
+    total_loss.backward()
+    assert leaf_logits.grad is not None
+    assert torch.isfinite(leaf_logits.grad).all()
+
+
 class TestExpertWeightGradWithZero(DistributedTest):
     world_size = 2
 

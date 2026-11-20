@@ -337,7 +337,7 @@ def top2gating(logits: Tensor,
     if top2_2nd_expert_sampling:
         # Create a mask for 2nd's expert per token using Gumbel-max trick
         # https://timvieira.github.io/blog/post/2014/07/31/gumbel-max-trick/
-        logits += gumbel_rsample(logits.shape, device=logits.device)
+        logits = logits + gumbel_rsample(logits.shape, device=logits.device)
 
     # Replace top-expert with min value
     logits_except1 = logits.masked_fill(mask1.bool(), float("-inf"))
